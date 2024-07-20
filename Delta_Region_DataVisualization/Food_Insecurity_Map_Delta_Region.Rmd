@@ -1,0 +1,461 @@
+
+# Library
+```{r}
+library(dplyr)
+library(haven)
+library(tidyverse)
+library(tidyr)
+library(zoo)
+library(readxl)
+library(stringr)
+library(imputeTS)
+library(cowplot)
+library(lubridate)
+library(tsDyn)
+library(ggplot2)
+library(reshape2)
+library(tools)
+library(readr)
+library(usmap)
+library(sf)
+library(ggmapinset)
+library(tigris)
+library(grid)
+library(zipcodeR)
+library(gridExtra)
+```
+
+
+
+############################### Delta Region Map and Population #############################################
+
+# Importing Food Security data
+```{r}
+keep <- c("USA_final_plot")
+rm(list = setdiff(ls(), keep))
+
+food_security <- read_excel("C:/Users/proka/OneDrive - Auburn University/Auburn/Research/Data/AAEA_Data_Visualization/MapTheMealGap/2018_County.xlsx")
+
+food_security <- food_security %>% 
+  rename(fips=FIPS, counties=`County, State`, food_insecure_percentage=`2018 Food Insecurity Rate`)
+
+# Remove everything after the comma in the "counties" column
+food_security$counties <- sub(",.*", "", food_security$counties)
+
+# List of states to include
+states_to_include <- c("LA", "AR", "MS", "AL")
+
+# Subset Delta_region
+Delta_regsion <- subset(food_security, State %in% states_to_include)
+
+# Import 2023 population data
+# Population data is downloaded from USDA: https://data.ers.usda.gov/reports.aspx?ID=17827
+Population <- read_excel("C:/Users/proka/OneDrive - Auburn University/Auburn/Research/Data/AAEA_Data_Visualization/Population/Population.xlsx")
+
+# Merging population data
+Delta_regsion <- Delta_regsion %>% merge(Population, by="fips")
+Delta_regsion$population_2023 <- Delta_regsion$population_2023/1000000 # Making Population Million
+
+
+# Extracting USA map data and marging with access_store dataset
+centroid_labels <- usmapdata::centroid_labels("counties")
+centroid_labels <- rename(centroid_labels, states=abbr)
+centroid_labels$fips <- as.numeric(centroid_labels$fips)
+df1 <- Delta_regsion %>% merge(centroid_labels, by="fips")
+
+df1 <- df1 %>%
+  mutate(counties = gsub(" County", "", counties))
+df1 <- df1 %>%
+  mutate(counties = gsub(" Parish", "", counties))
+
+
+rm(food_security, Population, centroid_labels)
+```
+
+
+# Delta Region Map
+```{r}
+# # US cities data
+# us_cities <- world.cities %>%
+#   filter(country.etc == "USA") %>%
+#   mutate(state = substr(name, nchar(name)-1, nchar(name)))
+# 
+# # Ensure the state names are in uppercase
+# us_cities <- us.cities %>%
+#   mutate(state = toupper(country.etc))
+# 
+# # Filter for the specified states
+# major_cities <- us_cities %>%
+#   filter(state %in% states_to_include) %>%
+#   select(name, state, lat, long) %>%
+#   rename(city = name, longitude = long, latitude = lat)
+
+
+# Plotting USA map with food insecurity percentage
+us_heat_map_insecurity <- plot_usmap(data = Delta_regsion, regions = "counties", include = states_to_include, values = "food_insecure_percentage") +
+  labs(title = "Insecurity Rate",
+       caption = "",
+       fill = "Percentage: Insecurity") +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 18, family = "Book Antiqua"),
+    legend.title = element_text(size = 15, family = "Book Antiqua"),
+    legend.text = element_text(size = 12),
+    legend.direction = "horizontal",
+    legend.justification = "center",
+    legend.box.just = "center",
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.title.align = 0.5
+  ) +
+  guides(
+    fill = guide_colourbar(
+      barwidth = 15,
+      barheight = 0.5,
+      title.position = "top",
+      title.hjust = 0.5,
+      label.hjust = 0.5
+    )
+  ) +
+  scale_fill_continuous(low = "#FFFFB2", high = "#B10026", 
+                        breaks = seq(0, 0.35, 0.05), 
+                        labels = scales::percent_format(accuracy = 1)) + 
+  theme(plot.margin = margin(0, 0, 0, 0))
+
+# Highlighting the specific states
+highlighted_states <- c("LA", "AR", "MS", "AL")
+highlighted_boundaries <- plot_usmap(include = highlighted_states, regions = "states", color = NA, fill = NA, size = 0.5, lwd = 0.8) +
+  geom_path(data = us_map("states"), aes(x = x, y = y, group = group), color = "white", size = 1)
+
+
+# Define the expanded list of counties of interest along with their states
+counties_of_interest <- data.frame(
+  counties = c("Jefferson", "Issaquena", "East Carroll", "Holmes", "Claiborne", "Perry",
+             "Humphreys", "Greene", "Phillips", "Wilkinson"),
+  State = c("MS", "MS", "LA", "MS", "MS", "AL", "Ms", "AL", "AR", "MS")
+)
+
+# Assuming df1 is your dataframe, subset the data to include only the counties of interest
+counties_of_interest <- df1 %>%
+  inner_join(counties_of_interest, by = c("counties" = "counties", "State" = "State"))
+
+
+# Combine the plots and add population circles and city labels
+food_insecurity_pop <- us_heat_map_insecurity +
+  geom_path(data = us_map("states", include = highlighted_states), aes(x = x, y = y, group = group), color = "white", size = 1.5) +
+  geom_point(data = df1, aes(x = x, y = y, size = population_2023), 
+             fill = "transparent", color = "black", alpha = 0.3, stroke = 0.7) +
+  geom_point(data = counties_of_interest, aes(x = x, y = y), 
+             shape = 8, color = "orange1", size = 2) + # Adding star marks for cities
+  geom_text(data = counties_of_interest, aes(x = x, y = y, label = counties), 
+            size = 4, hjust = 0.5, vjust = -0.5, color = "blue4", fontface = "bold") + # Adding city names
+  scale_size_continuous(range = c(1, 15), name = "Population: Million", 
+                        breaks = c(0.1, 0.2, 0.3, 0.4, 0.5), 
+                        labels = c("0.1", "0.2", "0.3", "0.4", "0.5")) +
+  guides(
+    size = guide_legend(
+      title.position = "top",
+      title.hjust = 0.5,
+      label.hjust = 0.5,
+      label.position = "bottom"
+    ),
+    fill = guide_colourbar(
+      order = 1,
+      barwidth = 15,
+      barheight = 0.5,
+      title.position = "top",
+      title.hjust = 0.5,
+      label.hjust = 0.5
+    )
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    plot.title = element_text(hjust = 0.5, size = 18, family = "Book Antiqua"),
+    legend.title = element_text(size = 15, family = "Book Antiqua"),
+    legend.text = element_text(size = 12, family = "Book Antiqua"),
+    legend.direction = "horizontal",
+    legend.justification = "center",
+    legend.box.just = "center",
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.title.align = 0.5
+  ) + theme(plot.margin = margin(0, 0, 0, 0))
+
+
+food_insecurity_pop
+
+# ggsave("food_insecurity_pop.jpg", plot = food_insecurity_pop, width = 30, height = 20, units = c("cm"), dpi = 400)
+```
+
+
+
+
+
+############################### Delta Region Store and Road ###############################
+
+
+## Importing Food store Data
+
+```{r}
+keep <- c("food_insecurity_pop", "USA_final_plot")
+rm(list = setdiff(ls(), keep))
+
+# We downoladed the retail locator data from USDA: https://www.fns.usda.gov/snap/retailer/historical-data?fbclid=IwZXh0bgNhZW0CMTAAAR0gMp_iXilXmYJjT1cuLj6KSsKaymuwvUxHs6S0--5HOUyQFXDrRtDN5QM_aem_rKeWPN6fpQXbA81zfK2RDw
+store <- read_csv("C:/Users/proka/OneDrive - Auburn University/Auburn/Research/Data/AAEA_Data_Visualization/Food_Store/Historical SNAP Retailer Locator Data-20231231.csv")
+
+# List of states to include
+states_to_include <- c("LA", "AR", "MS", "AL")
+
+# Subset Delta_region
+store <- subset(store, State %in% states_to_include)
+
+# Subset the dataset to include only rows where "End Date" is NA
+store <- store[is.na(store$`End Date`), ]
+
+# Subset Supermarket and Convenience Store
+store <- subset(store, `Store Type` %in% c("Convenience Store", "Supermarket", "Super Store"))
+
+# Extracting necessary Variables
+store <- store[, c(3,7,8,9,11:13)]
+
+store <- rename(store, store_type=`Store Type`, zip_code = `Zip Code`, lat=Latitude, lon=Longitude)
+
+store <- na.omit(store)
+store <- store %>% filter(!(lat==0 & lon==0))
+```
+
+
+## Map coordinates
+
+```{r}
+# Create a data frame with lat and lng
+coordinates <- data.frame(lat = store$lat, lon = store$lon)
+
+# Transform the coordinates to the USMAP coordinate system
+transformed_coords <- usmap_transform(coordinates)
+
+# merge
+store <- store %>% merge(transformed_coords, by=c("lat", "lon"))
+```
+
+
+# Delata Map for Store and Road
+
+```{r}
+highlighted_states <- c("LA", "AR", "MS", "AL")
+
+# Create the map plot
+delta_map_store <- plot_usmap(regions = "county", include = highlighted_states) +
+  geom_path(data = us_map("states", include = highlighted_states), aes(x = x, y = y, group = group), color = "black", size = 1) +
+  geom_point(data = store %>% filter(store_type == "Convenience Store"), 
+             aes(x = x, y = y, color = "Convenience Store"), size = 1, alpha = 0.6) +
+  geom_point(data = store %>% filter(store_type == "Supermarket"), 
+             aes(x = x, y = y, color = "Supermarket"), size = 1, alpha = 0.6) +
+  geom_point(data = store %>% filter(store_type == "Super Store"), 
+             aes(x = x, y = y), color = "green", size = 1, alpha = 0.6, show.legend = FALSE) +
+  labs(color = "Store Type") +  # Updated to label the points
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 20, family = "Book Antiqua"),
+    legend.title = element_text(size = 15, family = "Book Antiqua"),
+    legend.text = element_text(size = 12, family = "Book Antiqua"),
+    legend.direction = "horizontal",
+    legend.justification = "center",
+    legend.box.just = "center",
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.title.align = 0.5
+  ) +
+  scale_color_manual(values = c("Convenience Store" = "red", "Supermarket" = "green"),
+                     labels = c("Convenience", "Supermarket & Supercenter"),
+                     name = "Store Types") +  # Properly labeling the points in the legend
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 3),
+      title.position = "top",
+      title.hjust = 0.5,
+      label.hjust = 0.5
+    )
+  ) + theme(plot.margin = margin(0, 0, 0, 0))
+
+delta_map_store
+
+# ggsave("delta_map_store.jpg", plot = delta_map_store, width = 30, height = 20, units = c("cm"), dpi = 400)
+```
+
+
+
+
+# Delta Region Highway data
+```{r}
+# Get state boundaries for the selected states
+states_boundaries <- states(cb = TRUE, class = "sf") %>%
+  filter(STUSPS %in% highlighted_states)
+
+# Get county boundaries for the selected states
+counties_boundaries <- counties(cb = TRUE, class = "sf") %>%
+  filter(STATEFP %in% substr(states_boundaries$GEOID, 1, 2))
+
+# Get primary roads data (interstates)
+primary_roads_data <- primary_roads(class = "sf") %>%
+  st_intersection(states_boundaries)
+
+# Initialize an empty list to store primary and secondary roads data for each state
+all_primary_secondary_roads_data <- list()
+
+# Loop through each state and retrieve primary and secondary roads data
+for (state in highlighted_states) {
+  state_roads <- primary_secondary_roads(state = state, class = "sf")
+  all_primary_secondary_roads_data[[state]] <- state_roads
+}
+
+# Combine all the primary and secondary roads data into a single data frame
+primary_secondary_roads_data <- do.call(rbind, all_primary_secondary_roads_data)
+
+# Transform the roads data and county boundaries to match the CRS of usmap (which is EPSG:4326)
+primary_roads_data <- st_transform(primary_roads_data, crs = 4326)
+primary_secondary_roads_data <- st_transform(primary_secondary_roads_data, crs = 4326)
+counties_boundaries <- st_transform(counties_boundaries, crs = 4326)
+states_boundaries <- st_transform(states_boundaries, crs = 4326)
+
+# Create dummy data for the legend
+legend_data <- data.frame(
+  x = c(0, 1),
+  y = c(0, 1),
+  type = c("Primary", "Secondary")
+)
+
+# Create the road network map plot with a custom legend
+road_map <- ggplot() +
+  geom_sf(data = states_boundaries, fill = NA, color = "black", size = 1) +
+  geom_sf(data = counties_boundaries, fill = NA, color = "black", size = .7) +
+  geom_sf(data = primary_secondary_roads_data, aes(color = "Secondary"), size = 0.2, alpha = 0.5) +
+  geom_sf(data = primary_roads_data, aes(color = "Primary"), size = .5, alpha = 1) +
+  geom_sf_text(data = states_boundaries, aes(label = NAME), size = 4, family = "Book Antiqua") +
+  scale_color_manual(name = "Road Type",
+                     values = c("Primary" = "blue", "Secondary" = "gray")) +
+  theme(
+    panel.background = element_rect(fill = "white"),
+    plot.background = element_rect(fill = "white"),
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 20, family = "Book Antiqua"),
+    legend.title = element_text(size = 15, family = "Book Antiqua"),
+    legend.text = element_text(size = 12, family = "Book Antiqua"),
+    legend.direction = "horizontal",
+    legend.justification = "center",
+    legend.box.just = "center",
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.title.align = 0.5,
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank()
+  ) +
+  guides(color = guide_legend(title.position = "top", title.hjust = 0.5, 
+                              override.aes = list(size = 3, linetype = 1, shape=NA, alpha=1))) +
+  theme(plot.margin = margin(0, 0, 0, 0))
+
+road_map
+
+# ggsave("road_map.jpg", plot = road_map, width = 30, height = 20, units = c("cm"), dpi = 400)
+```
+
+
+
+
+
+## Combine All the Maps
+
+```{r}
+# Combine the second column plots without extra white space
+second_column <- plot_grid(
+  delta_map_store + theme(plot.margin = margin(0, 0, 0, 0)), 
+  road_map + theme(plot.margin = margin(0, 0, 0, 0)),
+  ncol = 1, nrow = 2,
+  rel_heights = c(1,1),  # Relative heights for both plots
+  align = "v",  # Align vertically to ensure no gap
+  axis = "tb"   # Align top and bottom axes
+)
+
+# Combine the first column plot and the second column plot
+combined_plot <- plot_grid(
+  plot_grid(food_insecurity_pop + theme(plot.margin = margin(0, 0, 0, 0)), ncol = 1, rel_heights = c(1)), 
+  second_column,
+  ncol = 2,
+  rel_widths = c(5, 4),  # Adjust the widths to give more space to the second column
+  align = "h",  # Align horizontally to ensure same height
+  axis = "tb",   # Align top and bottom axes
+  scale = c(1, 1.1)  # Scale second column to make it larger
+)
+
+# Add title with Book Antiqua font
+title <- ggdraw() + 
+  draw_label(
+    "Incorporating Food Access Indicators to Remap High Food Insecurity in the Delta Region",
+    fontfamily = "Book Antiqua",
+    size = 25,
+    x = 0.5,
+    hjust = 0.5
+  ) +
+  theme(
+    plot.margin = margin(0, 0, 0, 0)  # Remove margins around the title
+  )
+
+# Note text split into multiple lines
+note_text <- "Note: Delta region includes Alabama, Arkansas, Louisiana, and Mississippi. Urban centers tend to generally have lower food insecurity because they are at the intersection of major roads and center of economic activity whereas  rural areas with fewer superstores/supermarkets and further away from major roads have higher food insecurity."
+wrapped_note_text <- strwrap(note_text, width = 175)
+wrapped_note_text <- paste(wrapped_note_text, collapse = "\n")
+
+# Add the note at the bottom
+note <- ggdraw() + 
+  draw_label(
+    wrapped_note_text,
+    fontfamily = "Book Antiqua",
+    size = 14,
+    x = 0.02,
+    hjust = 0.0
+  ) +
+  theme(
+    plot.margin = margin(0, 0, 0, 0)  # Remove margins around the note
+  )
+
+# Combine the title, combined plot, and note into the final poster
+poster <- plot_grid(
+  title,
+  combined_plot,
+  note,
+  ncol = 1, nrow = 3,
+  rel_heights = c(0.15, 1, 0.18)  # Adjusting the relative height for title, plots, and note
+)
+
+# Adjust the overall plot margins
+poster <- poster + theme(plot.margin = margin(0, 0, 0, 0))
+
+ggsave("Food_Insecurity_Map_Delta_Region.jpg", plot = poster, width = 40, height = 30, units = c("cm"), dpi = 600)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
